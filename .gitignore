@@ -1,0 +1,8 @@
+*~
+*.tar.gz
+/rootdir
+.settings
+.project
+.cproject
+.pydevproject
+
