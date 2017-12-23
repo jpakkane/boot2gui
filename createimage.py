@@ -64,6 +64,7 @@ class ImageCreator:
         self.usb_mount_dir = 'usbmount'
         self.usb_device_name = usb_device_name
         self.usb_partition = usb_device + '1'
+        self.isolinux_cfg_file = os.path.join(self.isolinuxdir, 'isolinux.cfg')
 
     def build_base_image(self):
         if os.path.exists(self.basetarfname):
@@ -89,6 +90,7 @@ class ImageCreator:
         self.chroot_run(['apt-get', 'install', '--no-install-recommends',
                          '--yes', '--force-yes', 'network-manager', 'xserver-xorg-core',
                          'xserver-xorg', 'xinit', 'xterm', 'nano'])
+        self.chroot_run(['apt-get', 'clean'])
         pc = subprocess.Popen(['chroot', self.chrootdir, 'passwd'], universal_newlines=True,
                               stdin=subprocess.PIPE)
         pc.communicate('root\nroot\n')
@@ -117,12 +119,13 @@ class ImageCreator:
         initrd = a[0]
         shutil.copy2(kernel, os.path.join(self.livedir, 'vmlinuz1'))
         shutil.copy2(initrd, os.path.join(self.livedir, 'initrd1'))
-        open(os.path.join(self.isolinuxdir, 'isolinux.cfg'), 'w').write(isolinux_cfg)
+        open(self.isolinux_cfg_file, 'w').write(isolinux_cfg)
 
-    def provision_usb(self):
+    def create_usb_partitions(self):
         # Code earlier hase verified that usb drive is unmounted.
         with open(self.usb_device_name, 'wb') as p:
             p.write(bytearray(1024))
+        subprocess.check_call('sync')
         device = parted.getDevice(self.usb_device_name)
         disk = parted.freshDisk(device, 'msdos')
         geometry = parted.Geometry(device=device,
@@ -137,6 +140,36 @@ class ImageCreator:
                           constraint=device.optimalAlignedConstraint)
         partition.setFlag(parted.PARTITION_BOOT)
         disk.commit()
+        subprocess.check_call('sync')
+
+    def create_disk(self):
+        subprocess.check_call(['syslinux', '-i', self.usb_partition])
+        subprocess.check_call(['dd',
+                               'if=/usr/lib/syslinux/mbr/mbr.bin',
+                               'of=' + self.usb_device_name,
+                               'conv=notrunc',
+                               'bs=440',
+                               'count=1'])
+        os.makedirs(self.usb_mount_dir, exist_ok=True)
+        import time
+        time.sleep(3) # The kernel seems to take a while to detect new partitions.
+        subprocess.check_call(['mount', self.usb_partition, self.usb_mount_dir])
+        try:
+            self._copy_files_to_usb()
+        finally:
+            subprocess.call(['umount', self.usb_mount_dir])
+            shutil.rmtree(self.usb_mount_dir, ignore_errors=True)
+
+    def _copy_files_to_usb(self):
+        for f in glob('/usr/lib/syslinux/modules/bios/*.c32'):
+            shutil.copy2(f, self.usb_mount_dir)
+        shutil.copy2('/boot/memtest86+.bin',
+                     os.path.join(self.usb_mount_dir, 'memtest'))
+        shutil.copy2(self.isolinux_cfg_file,
+                     os.path.join(self.usb_mount_dir, 'syslinux.cfg'))
+        shutil.copy2('/usr/share/misc/pci.ids', self.usb_mount_dir)
+        for f in glob(os.path.join(self.livedir, '*')):
+            shutil.copy2(f, self.usb_mount_dir)
 
 def check_mount(usb_device):
     for line in subprocess.check_output('mount', universal_newlines=True).split('\n'):
@@ -160,5 +193,5 @@ if __name__ == '__main__':
     #ic.build_base_image()
     #ic.install_deps()
     #ic.create_live_image()
-    ic.provision_usb()
-
+    ic.create_usb_partitions()
+    ic.create_disk()
