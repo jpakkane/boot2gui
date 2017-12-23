@@ -21,6 +21,8 @@
 import os, sys, subprocess, shutil
 from glob import glob
 
+import parted
+
 isolinux_cfg = '''UI menu.c32
 
 prompt 0
@@ -49,7 +51,7 @@ kernel /live/memtest
 
 class ImageCreator:
     
-    def __init__(self):
+    def __init__(self, usb_device_name):
         self.chrootdir = 'rootdir'
         self.basetar = 'baseroot'
         self.basetarfname = 'baseroot.tar.gz'
@@ -59,6 +61,9 @@ class ImageCreator:
         self.imagedir = 'image'
         self.livedir = 'image/live'
         self.isolinuxdir = 'image/isolinux'
+        self.usb_mount_dir = 'usbmount'
+        self.usb_device_name = usb_device_name
+        self.usb_partition = usb_device + '1'
 
     def build_base_image(self):
         if os.path.exists(self.basetarfname):
@@ -114,13 +119,46 @@ class ImageCreator:
         shutil.copy2(initrd, os.path.join(self.livedir, 'initrd1'))
         open(os.path.join(self.isolinuxdir, 'isolinux.cfg'), 'w').write(isolinux_cfg)
 
+    def provision_usb(self):
+        # Code earlier hase verified that usb drive is unmounted.
+        with open(self.usb_device_name, 'wb') as p:
+            p.write(bytearray(1024))
+        device = parted.getDevice(self.usb_device_name)
+        disk = parted.freshDisk(device, 'msdos')
+        geometry = parted.Geometry(device=device,
+                                   start=1,
+                                   length=device.getLength() - 1)
+        filesystem = parted.FileSystem(type='fat32', geometry=geometry)
+        partition = parted.Partition(disk=disk,
+                                     type=parted.PARTITION_NORMAL,
+                                     fs=filesystem,
+                                     geometry=geometry)
+        disk.addPartition(partition=partition,
+                          constraint=device.optimalAlignedConstraint)
+        partition.setFlag(parted.PARTITION_BOOT)
+        disk.commit()
+
+def check_mount(usb_device):
+    for line in subprocess.check_output('mount', universal_newlines=True).split('\n'):
+        if line.startswith(usb_device):
+            sys.exit('Partition %s on device %s is mounted.' % (line.split()[0], usb_device))
+
 if __name__ == '__main__':
-    
-    ic = ImageCreator()
+    if len(sys.argv) != 2:
+        sys.exit('%s <usb stick device name e.g. /dev/sdd')
+    usb_device = sys.argv[1]
+    if not usb_device.startswith('/dev/'):
+        sys.exit('Invalid usb stick device: ' + usb_device)
+    check_mount(usb_device)
+    if shutil.which('mksquashfs') is None:
+        sys.exit('mksquashfs not installed.') 
     if shutil.which('syslinux') is None:
-        sys.exit('syslinux not installed')
+        sys.exit('syslinux not installed.')
     if os.getuid() != 0:
         sys.exit('This script must be run with root privileges.')
-    ic.build_base_image()
+    ic = ImageCreator(usb_device)
+    #ic.build_base_image()
     #ic.install_deps()
-    ic.create_live_image()
+    #ic.create_live_image()
+    ic.provision_usb()
+
