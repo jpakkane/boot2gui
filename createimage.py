@@ -175,6 +175,10 @@ def check_mount(usb_device):
     for line in subprocess.check_output('mount', universal_newlines=True).split('\n'):
         if line.startswith(usb_device):
             sys.exit('Partition %s on device %s is mounted.' % (line.split()[0], usb_device))
+    try:
+        open(usb_device, 'rb').close()
+    except OSError:
+        sys.exit('Could not open device %s for reading.' % usb_device)
 
 if __name__ == '__main__':
     if len(sys.argv) != 2:
@@ -190,8 +194,8 @@ if __name__ == '__main__':
     if os.getuid() != 0:
         sys.exit('This script must be run with root privileges.')
     ic = ImageCreator(usb_device)
-    #ic.build_base_image()
-    #ic.install_deps()
-    #ic.create_live_image()
+    ic.build_base_image()
+    ic.install_deps()
+    ic.create_live_image()
     ic.create_usb_partitions()
     ic.create_disk()
