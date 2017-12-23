@@ -171,7 +171,9 @@ class ImageCreator:
         for f in glob(os.path.join(self.livedir, '*')):
             shutil.copy2(f, self.usb_mount_dir)
 
-def check_mount(usb_device):
+def check_system_requirements(usb_device):
+    if not usb_device.startswith('/dev/'):
+        sys.exit('Invalid usb stick device: ' + usb_device)
     for line in subprocess.check_output('mount', universal_newlines=True).split('\n'):
         if line.startswith(usb_device):
             sys.exit('Partition %s on device %s is mounted.' % (line.split()[0], usb_device))
@@ -179,20 +181,18 @@ def check_mount(usb_device):
         open(usb_device, 'rb').close()
     except OSError:
         sys.exit('Could not open device %s for reading.' % usb_device)
-
-if __name__ == '__main__':
-    if len(sys.argv) != 2:
-        sys.exit('%s <usb stick device name e.g. /dev/sdd')
-    usb_device = sys.argv[1]
-    if not usb_device.startswith('/dev/'):
-        sys.exit('Invalid usb stick device: ' + usb_device)
-    check_mount(usb_device)
     if shutil.which('mksquashfs') is None:
         sys.exit('mksquashfs not installed.') 
     if shutil.which('syslinux') is None:
         sys.exit('syslinux not installed.')
     if os.getuid() != 0:
         sys.exit('This script must be run with root privileges.')
+
+if __name__ == '__main__':
+    if len(sys.argv) != 2:
+        sys.exit('%s <usb stick device name e.g. /dev/sdd')
+    usb_device = sys.argv[1]
+    check_system_requirements(usb_device)
     ic = ImageCreator(usb_device)
     ic.build_base_image()
     ic.install_deps()
