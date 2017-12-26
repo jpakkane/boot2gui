@@ -1,6 +1,7 @@
 *~
 *.tar.gz
 /rootdir
+/image
 .settings
 .project
 .cproject

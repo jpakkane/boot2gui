@@ -19,7 +19,7 @@
 # http://willhaley.com/blog/create-a-custom-debian-stretch-live-environment-ubuntu-17-zesty/
 
 import os, sys, subprocess, shutil
-from glob import glob
+import pathlib
 
 import parted
 
@@ -52,37 +52,37 @@ kernel /live/memtest
 class ImageCreator:
     
     def __init__(self, usb_device_name):
-        self.chrootdir = 'rootdir'
-        self.basetar = 'baseroot'
-        self.basetarfname = 'baseroot.tar.gz'
+        self.chrootdir = pathlib.Path('rootdir')
+        self.basetar = pathlib.Path('baseroot')
+        self.basetarfname = pathlib.Path('baseroot.tar.gz')
         self.installedtar = 'installed'
-        self.installedtarfname = 'installed.tar.gz'
+        self.installedtarfname = pathlib.Path('installed.tar.gz')
         self.distro = 'stretch'
-        self.imagedir = 'image'
-        self.livedir = 'image/live'
-        self.isolinuxdir = 'image/isolinux'
-        self.usb_mount_dir = 'usbmount'
+        self.imagedir = pathlib.Path('image')
+        self.livedir = pathlib.Path('image/live')
+        self.isolinuxdir = pathlib.Path('image/isolinux')
+        self.usb_mount_dir = pathlib.Path('usbmount')
         self.usb_device_name = usb_device_name
         self.usb_partition = usb_device + '1'
-        self.isolinux_cfg_file = os.path.join(self.isolinuxdir, 'isolinux.cfg')
+        self.isolinux_cfg_file = self.isolinuxdir / 'isolinux.cfg'
 
     def build_base_image(self):
-        if os.path.exists(self.basetarfname):
+        if self.basetarfname.exists():
             return
-        if os.path.exists(self.chrootdir):
-            shutil.rmtree(self.chrootdir)
-        os.mkdir(self.chrootdir)
+        if self.chrootdir.exists():
+            shutil.rmtree(str(self.chrootdir))
+        self.chrootdir.mkdir()
         subprocess.check_call(['debootstrap', self.distro, self.chrootdir, 'http://ftp.fi.debian.org/debian'])
         shutil.make_archive(self.basetar, 'gztar', '.', self.chrootdir)
 
     def install_deps(self):
-        if os.path.exists(self.installedtarfname):
+        if self.installedtarfname.exists():
             return
-        if os.path.exists(self.chrootdir):
-            shutil.rmtree(self.chrootdir)
-        shutil.unpack_archive(self.basetarfname)
+        if self.chrootdir.exists():
+            shutil.rmtree(str(self.chrootdir))
+        shutil.unpack_archive(str(self.basetarfname))
         assert(os.path.exists(self.chrootdir))
-        open(os.path.join(self.chrootdir, 'etc/hostname'), 'w').write('boot2gui')
+        open(self.chrootdir / 'etc/hostname', 'w').write('boot2gui')
         self.chroot_run(['apt-get', 'update'])
         self.chroot_run(['apt-get', 'install', '--no-install-recommends',
                          '--yes', '--force-yes', 'linux-image-amd64',
@@ -102,23 +102,23 @@ class ImageCreator:
 
     def create_live_image(self):
         if os.path.exists(self.imagedir):
-            shutil.rmtree(self.imagedir)
+            shutil.rmtree(str(self.imagedir))
         if os.path.exists(self.chrootdir):
-            shutil.rmtree(self.chrootdir)
-        shutil.unpack_archive(self.installedtarfname)
+            shutil.rmtree(str(self.chrootdir))
+        shutil.unpack_archive(str(self.installedtarfname))
         os.makedirs(self.livedir, exist_ok=True)
         os.makedirs(self.isolinuxdir, exist_ok=True)
         subprocess.check_call(['mksquashfs', self.chrootdir,
                                os.path.join(self.livedir, 'filesystem.squashfs'),
                                '-e', 'boot'])
-        a = glob(os.path.join(self.chrootdir, 'boot/vmlinuz*'))
+        a = list(self.chrootdir.glob('boot/vmlinuz*'))
         assert(len(a) == 1)
         kernel = a[0]
-        a = glob(os.path.join(self.chrootdir, 'boot/initrd*'))
+        a = list(self.chrootdir.glob('boot/initrd*'))
         assert(len(a) == 1)
         initrd = a[0]
-        shutil.copy2(kernel, os.path.join(self.livedir, 'vmlinuz1'))
-        shutil.copy2(initrd, os.path.join(self.livedir, 'initrd1'))
+        shutil.copy2(kernel, self.livedir / 'vmlinuz1')
+        shutil.copy2(initrd, self.livedir / 'initrd1')
         open(self.isolinux_cfg_file, 'w').write(isolinux_cfg)
 
     def create_usb_partitions(self):
@@ -161,17 +161,21 @@ class ImageCreator:
             shutil.rmtree(self.usb_mount_dir, ignore_errors=True)
 
     def _copy_files_to_usb(self):
-        for f in glob('/usr/lib/syslinux/modules/bios/*.c32'):
+        biosdir = pathlib.Path('/usr/lib/syslinux/modules/bios')
+        assert(biosdir.is_dir())
+        for f in biosdir.glob('*.c32'):
             shutil.copy2(f, self.usb_mount_dir)
         shutil.copy2('/boot/memtest86+.bin',
-                     os.path.join(self.usb_mount_dir, 'memtest'))
+                     self.usb_mount_dir / 'memtest')
         shutil.copy2(self.isolinux_cfg_file,
-                     os.path.join(self.usb_mount_dir, 'syslinux.cfg'))
+                     self.usb_mount_dir / 'syslinux.cfg')
         shutil.copy2('/usr/share/misc/pci.ids', self.usb_mount_dir)
-        for f in glob(os.path.join(self.livedir, '*')):
+        for f in self.livedir.glob('*'):
             shutil.copy2(f, self.usb_mount_dir)
 
 def check_system_requirements(usb_device):
+    if os.getuid() != 0:
+        sys.exit('This script must be run with root privileges.')
     if not usb_device.startswith('/dev/'):
         sys.exit('Invalid usb stick device: ' + usb_device)
     for line in subprocess.check_output('mount', universal_newlines=True).split('\n'):
@@ -185,8 +189,6 @@ def check_system_requirements(usb_device):
         sys.exit('mksquashfs not installed.') 
     if shutil.which('syslinux') is None:
         sys.exit('syslinux not installed.')
-    if os.getuid() != 0:
-        sys.exit('This script must be run with root privileges.')
 
 if __name__ == '__main__':
     if len(sys.argv) != 2:
