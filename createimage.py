@@ -26,7 +26,7 @@ import parted
 isolinux_cfg = '''UI menu.c32
 
 prompt 0
-menu title Debian Live
+menu title Boot2GUI live USB stick
 
 timeout 300
 
@@ -75,13 +75,18 @@ class ImageCreator:
         subprocess.check_call(['debootstrap', self.distro, self.chrootdir, 'http://ftp.fi.debian.org/debian'])
         shutil.make_archive(self.basetar, 'gztar', '.', self.chrootdir)
 
-    def install_deps(self):
+    def build_rootfs(self):
         if self.installedtarfname.exists():
             return
         if self.chrootdir.exists():
             shutil.rmtree(str(self.chrootdir))
         shutil.unpack_archive(str(self.basetarfname))
         assert(os.path.exists(self.chrootdir))
+        ic._install_deps()
+        ic._setup_guiboot()
+        shutil.make_archive(self.installedtar, 'gztar', '.', self.chrootdir)
+
+    def _install_deps(self):
         open(self.chrootdir / 'etc/hostname', 'w').write('boot2gui')
         self.chroot_run(['apt-get', 'update'])
         self.chroot_run(['apt-get', 'install', '--no-install-recommends',
@@ -89,13 +94,13 @@ class ImageCreator:
                          'live-boot', 'systemd-sysv'])
         self.chroot_run(['apt-get', 'install', '--no-install-recommends',
                          '--yes', '--force-yes', 'network-manager', 'xserver-xorg-core',
-                         'xserver-xorg', 'xinit', 'xterm', 'nano'])
+                         'xserver-xorg', 'xinit', 'xterm', 'nano',
+                         'python3-gi', 'gir1.2-gtk-3.0'])
         self.chroot_run(['apt-get', 'clean'])
         pc = subprocess.Popen(['chroot', self.chrootdir, 'passwd'], universal_newlines=True,
                               stdin=subprocess.PIPE)
         pc.communicate('root\nroot\n')
         assert(pc.returncode == 0)
-        shutil.make_archive(self.installedtar, 'gztar', '.', self.chrootdir)
 
     def chroot_run(self, cmd):
         subprocess.check_call(['chroot', self.chrootdir] + cmd)
@@ -122,9 +127,9 @@ class ImageCreator:
         open(self.isolinux_cfg_file, 'w').write(isolinux_cfg)
 
     def create_usb_partitions(self):
-        # Code earlier hase verified that usb drive is unmounted.
+        # Code earlier has verified that usb drive is unmounted.
         with open(self.usb_device_name, 'wb') as p:
-            p.write(bytearray(1024))
+            p.write(bytearray(1024*1024))
         subprocess.check_call('sync')
         device = parted.getDevice(self.usb_device_name)
         disk = parted.freshDisk(device, 'msdos')
@@ -143,22 +148,33 @@ class ImageCreator:
         subprocess.check_call('sync')
 
     def create_disk(self):
-        subprocess.check_call(['syslinux', '-i', self.usb_partition])
-        subprocess.check_call(['dd',
-                               'if=/usr/lib/syslinux/mbr/mbr.bin',
-                               'of=' + self.usb_device_name,
-                               'conv=notrunc',
-                               'bs=440',
-                               'count=1'])
-        os.makedirs(self.usb_mount_dir, exist_ok=True)
         import time
         time.sleep(3) # The kernel seems to take a while to detect new partitions.
+        subprocess.check_call(['syslinux', '-i', self.usb_partition])
+        mbr = open('/usr/lib/syslinux/mbr/mbr.bin', 'rb').read(440)
+        open(self.usb_device_name, 'wb').write(mbr)
+        os.makedirs(self.usb_mount_dir, exist_ok=True)
         subprocess.check_call(['mount', self.usb_partition, self.usb_mount_dir])
         try:
             self._copy_files_to_usb()
         finally:
             subprocess.call(['umount', self.usb_mount_dir])
             shutil.rmtree(self.usb_mount_dir, ignore_errors=True)
+
+    def _setup_guiboot(self):
+        import stat
+        exec_chmods= stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR | \
+            stat.S_IRGRP | stat.S_IXGRP | \
+            stat.S_IROTH | stat.S_IXOTH
+        shutil.copy2('guiapp.py', self.chrootdir / 'root/guiapp.py')
+        x_initter = self.chrootdir / 'etc/rcS.d/S90-startgui'
+        xinitrc = self.chrootdir / 'root/.xinitrc'
+        x_initter.write_text('''#!/bin/sh
+su -s /bin/sh -c startx root&
+''')
+        x_initter.chmod(exec_chmods)
+        xinitrc.write_text('/root/guiapp.py\n')
+        xinitrc.chmod(exec_chmods)
 
     def _copy_files_to_usb(self):
         biosdir = pathlib.Path('/usr/lib/syslinux/modules/bios')
@@ -171,7 +187,7 @@ class ImageCreator:
                      self.usb_mount_dir / 'syslinux.cfg')
         shutil.copy2('/usr/share/misc/pci.ids', self.usb_mount_dir)
         for f in self.livedir.glob('*'):
-            shutil.copy2(f, self.usb_mount_dir)
+            shutil.copy(f, self.usb_mount_dir / self.livedir.parts[-1])
 
 def check_system_requirements(usb_device):
     if os.getuid() != 0:
@@ -186,7 +202,7 @@ def check_system_requirements(usb_device):
     except OSError:
         sys.exit('Could not open device %s for reading.' % usb_device)
     if shutil.which('mksquashfs') is None:
-        sys.exit('mksquashfs not installed.') 
+        sys.exit('mksquashfs not installed.')
     if shutil.which('syslinux') is None:
         sys.exit('syslinux not installed.')
 
@@ -197,7 +213,7 @@ if __name__ == '__main__':
     check_system_requirements(usb_device)
     ic = ImageCreator(usb_device)
     ic.build_base_image()
-    ic.install_deps()
+    ic.build_rootfs()
     ic.create_live_image()
     ic.create_usb_partitions()
     ic.create_disk()
