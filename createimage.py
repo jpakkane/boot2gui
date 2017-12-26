@@ -48,15 +48,21 @@ menu label ^Memory Failure Detection (memtest86+)
 kernel /live/memtest
 '''
 
+prof_snippet = '''if [ -z "$DISPLAY" ] && [ -n "$XDG_VTNR" ] && [ "$XDG_VTNR" -eq 1 ]; then
+  exec startx
+fi
+'''
 
 class ImageCreator:
-    
+
     def __init__(self, usb_device_name):
         self.chrootdir = pathlib.Path('rootdir')
         self.basetar = pathlib.Path('baseroot')
         self.basetarfname = pathlib.Path('baseroot.tar.gz')
         self.installedtar = 'installed'
         self.installedtarfname = pathlib.Path('installed.tar.gz')
+        self.bootingtar = 'booting'
+        self.bootingtarfname = pathlib.Path('booting.tar.gz')
         self.distro = 'stretch'
         self.imagedir = pathlib.Path('image')
         self.livedir = pathlib.Path('image/live')
@@ -75,18 +81,13 @@ class ImageCreator:
         subprocess.check_call(['debootstrap', self.distro, self.chrootdir, 'http://ftp.fi.debian.org/debian'])
         shutil.make_archive(self.basetar, 'gztar', '.', self.chrootdir)
 
-    def build_rootfs(self):
+    def install_deps(self):
         if self.installedtarfname.exists():
             return
         if self.chrootdir.exists():
             shutil.rmtree(str(self.chrootdir))
         shutil.unpack_archive(str(self.basetarfname))
         assert(os.path.exists(self.chrootdir))
-        ic._install_deps()
-        ic._setup_guiboot()
-        shutil.make_archive(self.installedtar, 'gztar', '.', self.chrootdir)
-
-    def _install_deps(self):
         open(self.chrootdir / 'etc/hostname', 'w').write('boot2gui')
         self.chroot_run(['apt-get', 'update'])
         self.chroot_run(['apt-get', 'install', '--no-install-recommends',
@@ -101,6 +102,7 @@ class ImageCreator:
                               stdin=subprocess.PIPE)
         pc.communicate('root\nroot\n')
         assert(pc.returncode == 0)
+        shutil.make_archive(self.installedtar, 'gztar', '.', self.chrootdir)
 
     def chroot_run(self, cmd):
         subprocess.check_call(['chroot', self.chrootdir] + cmd)
@@ -110,7 +112,7 @@ class ImageCreator:
             shutil.rmtree(str(self.imagedir))
         if os.path.exists(self.chrootdir):
             shutil.rmtree(str(self.chrootdir))
-        shutil.unpack_archive(str(self.installedtarfname))
+        shutil.unpack_archive(str(self.bootingtarfname))
         os.makedirs(self.livedir, exist_ok=True)
         os.makedirs(self.isolinuxdir, exist_ok=True)
         subprocess.check_call(['mksquashfs', self.chrootdir,
@@ -161,20 +163,33 @@ class ImageCreator:
             subprocess.call(['umount', self.usb_mount_dir])
             shutil.rmtree(self.usb_mount_dir, ignore_errors=True)
 
-    def _setup_guiboot(self):
+    def setup_guiboot(self):
+        if self.bootingtarfname.exists():
+            return
+        if self.chrootdir.exists():
+            shutil.rmtree(str(self.chrootdir))
+        shutil.unpack_archive(str(self.installedtarfname))
         import stat
         exec_chmods= stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR | \
             stat.S_IRGRP | stat.S_IXGRP | \
             stat.S_IROTH | stat.S_IXOTH
         shutil.copy2('guiapp.py', self.chrootdir / 'root/guiapp.py')
-        x_initter = self.chrootdir / 'etc/rcS.d/S90-startgui'
         xinitrc = self.chrootdir / 'root/.xinitrc'
-        x_initter.write_text('''#!/bin/sh
-su -s /bin/sh -c startx root&
-''')
-        x_initter.chmod(exec_chmods)
         xinitrc.write_text('/root/guiapp.py\n')
         xinitrc.chmod(exec_chmods)
+        gettyfile = self.chrootdir / 'lib/systemd/system/getty@.service'
+        gcont = gettyfile.read_text()
+        with gettyfile.open('w') as f:
+            for line in gcont.split('\n'):
+                if line.startswith('ExecStart='):
+                    arr = line.split()
+                    arr = arr[0:2] + ['-a', 'root'] + arr[2:]
+                    line = ' '.join(arr)
+                f.write(line)
+                f.write('\n')
+        prof = self.chrootdir / 'root/.bash_profile'
+        prof.write_text(prof_snippet)
+        shutil.make_archive(self.bootingtar, 'gztar', '.', self.chrootdir)
 
     def _copy_files_to_usb(self):
         biosdir = pathlib.Path('/usr/lib/syslinux/modules/bios')
@@ -188,6 +203,14 @@ su -s /bin/sh -c startx root&
         shutil.copy2('/usr/share/misc/pci.ids', self.usb_mount_dir)
         for f in self.livedir.glob('*'):
             shutil.copy(f, self.usb_mount_dir / self.livedir.parts[-1])
+
+    def doit(self):
+        ic.build_base_image()
+        ic.install_deps()
+        ic.setup_guiboot()
+        ic.create_live_image()
+        ic.create_usb_partitions()
+        ic.create_disk()
 
 def check_system_requirements(usb_device):
     if os.getuid() != 0:
@@ -212,8 +235,4 @@ if __name__ == '__main__':
     usb_device = sys.argv[1]
     check_system_requirements(usb_device)
     ic = ImageCreator(usb_device)
-    ic.build_base_image()
-    ic.build_rootfs()
-    ic.create_live_image()
-    ic.create_usb_partitions()
-    ic.create_disk()
+    ic.doit()
