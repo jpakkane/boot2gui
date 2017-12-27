@@ -146,9 +146,10 @@ class ImageCreator:
         subprocess.check_call('sync')
         device = parted.getDevice(self.usb_device_name)
         disk = parted.freshDisk(device, 'msdos')
+        constraint = parted.Constraint(device=device)
         geometry = parted.Geometry(device=device,
                                    start=1,
-                                   length=device.getLength() - 1)
+                                   end=(constraint.maxSize-1))
         filesystem = parted.FileSystem(type='fat32', geometry=geometry)
         partition = parted.Partition(disk=disk,
                                      type=parted.PARTITION_NORMAL,
@@ -160,7 +161,7 @@ class ImageCreator:
         disk.commit()
         subprocess.check_call('sync')
         import time
-        time.sleep(3) # The kernel seems to take a while to detect new partitions.
+        time.sleep(5) # The kernel seems to take a while to detect new partitions.
         subprocess.check_call(['mkfs.vfat', self.usb_partition])
 
     def create_disk(self):
