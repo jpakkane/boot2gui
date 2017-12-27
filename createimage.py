@@ -72,6 +72,18 @@ class ImageCreator:
         self.usb_partition = usb_device + '1'
         self.isolinux_cfg_file = self.isolinuxdir / 'isolinux.cfg'
 
+    def wipe_old_partitions(self):
+        from glob import glob
+        for partition in glob(self.usb_device_name + '[0-9]*'):
+            self.wipe_dev(partition)
+        self.wipe_dev(self.usb_device_name)
+        subprocess.call('sync')
+
+    def wipe_dev(self, dev_name):
+        # Code earlier has verified that usb drive is unmounted.
+        with open(dev_name, 'wb') as p:
+            p.write(bytearray(1024*1024))
+
     def build_base_image(self):
         if self.basetarfname.exists():
             return
@@ -130,8 +142,7 @@ class ImageCreator:
 
     def create_usb_partitions(self):
         # Code earlier has verified that usb drive is unmounted.
-        with open(self.usb_device_name, 'wb') as p:
-            p.write(bytearray(1024*1024))
+        self.wipe_old_partitions()
         subprocess.check_call('sync')
         device = parted.getDevice(self.usb_device_name)
         disk = parted.freshDisk(device, 'msdos')
@@ -148,10 +159,11 @@ class ImageCreator:
         partition.setFlag(parted.PARTITION_BOOT)
         disk.commit()
         subprocess.check_call('sync')
-
-    def create_disk(self):
         import time
         time.sleep(3) # The kernel seems to take a while to detect new partitions.
+        subprocess.check_call(['mkfs.vfat', self.usb_partition])
+
+    def create_disk(self):
         subprocess.check_call(['syslinux', '-i', self.usb_partition])
         mbr = open('/usr/lib/syslinux/mbr/mbr.bin', 'rb').read(440)
         open(self.usb_device_name, 'wb').write(mbr)
@@ -201,8 +213,10 @@ class ImageCreator:
         shutil.copy2(self.isolinux_cfg_file,
                      self.usb_mount_dir / 'syslinux.cfg')
         shutil.copy2('/usr/share/misc/pci.ids', self.usb_mount_dir)
+        disk_livedir = self.usb_mount_dir / self.livedir.parts[-1]
+        disk_livedir.mkdir(exist_ok=True)
         for f in self.livedir.glob('*'):
-            shutil.copy(f, self.usb_mount_dir / self.livedir.parts[-1])
+            shutil.copy(f, disk_livedir)
 
     def doit(self):
         ic.build_base_image()
@@ -213,6 +227,8 @@ class ImageCreator:
         ic.create_disk()
 
 def check_system_requirements(usb_device):
+    if sys.version_info < (3, 6):
+        sys.exit('This script requires Python 3.6 or newer.')
     if os.getuid() != 0:
         sys.exit('This script must be run with root privileges.')
     if not usb_device.startswith('/dev/'):
