@@ -16,6 +16,6 @@ Ubuntu.
 
 The application is run as root.
 
-The application is implemented in PyGTK 3.0. If you want some other
-framework, you need to change the dependency list and the
+The application is implemented in Gtk+ 3 and Python 3. If you want
+some other framework, you need to change the dependency list and the
 application's install command.
